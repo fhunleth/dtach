@@ -510,7 +510,7 @@ master_process(int s, char **argv, int waitattach, int statusfd)
 }
 
 int
-master_main(char **argv, int waitattach)
+master_main(char **argv, int waitattach, int dontfork)
 {
 	int fd[2] = {-1, -1};
 	int s;
@@ -528,59 +528,64 @@ master_main(char **argv, int waitattach)
 		return 1;
 	}
 
-#if defined(F_SETFD) && defined(FD_CLOEXEC)
-	fcntl(s, F_SETFD, FD_CLOEXEC);
-
-	/* If FD_CLOEXEC works, create a pipe and use it to report any errors
-	** that occur while trying to execute the program. */
-	if (pipe(fd) >= 0)
+	if (dontfork)
+		master_process(s, argv, waitattach, fd[1]);
+	else
 	{
-		if (fcntl(fd[0], F_SETFD, FD_CLOEXEC) < 0 ||
-		    fcntl(fd[1], F_SETFD, FD_CLOEXEC) < 0)
+#if defined(F_SETFD) && defined(FD_CLOEXEC)
+		fcntl(s, F_SETFD, FD_CLOEXEC);
+
+		/* If FD_CLOEXEC works, create a pipe and use it to report any errors
+		** that occur while trying to execute the program. */
+		if (pipe(fd) >= 0)
 		{
-			close(fd[0]);
-			close(fd[1]);
-			fd[0] = fd[1] = -1;
+			if (fcntl(fd[0], F_SETFD, FD_CLOEXEC) < 0 ||
+			    fcntl(fd[1], F_SETFD, FD_CLOEXEC) < 0)
+			{
+				close(fd[0]);
+				close(fd[1]);
+				fd[0] = fd[1] = -1;
+			}
 		}
-	}
 #endif
 
-	/* Fork off so we can daemonize and such */
-	pid = fork();
-	if (pid < 0)
-	{
-		printf("%s: fork: %s\n", progname, strerror(errno));
-		unlink_socket();
-		return 1;
-	}
-	else if (pid == 0)
-	{
-		/* Child - this becomes the master */
-		if (fd[0] != -1)
-			close(fd[0]);
-		master_process(s, argv, waitattach, fd[1]);
-		return 0;
-	}
-	/* Parent - just return. */
-
-#if defined(F_SETFD) && defined(FD_CLOEXEC)
-	/* Check if an error occurred while trying to execute the program. */
-	if (fd[0] != -1)
-	{
-		char buf[1024];
-		ssize_t len;
-
-		close(fd[1]);
-		len = read(fd[0], buf, sizeof(buf));
-		if (len > 0)
+		/* Fork off so we can daemonize and such */
+		pid = fork();
+		if (pid < 0)
 		{
-			write(2, buf, len);
-			kill(pid, SIGTERM);
+			printf("%s: fork: %s\n", progname, strerror(errno));
+			unlink_socket();
 			return 1;
 		}
-		close(fd[0]);
-	}
+		else if (pid == 0)
+		{
+			/* Child - this becomes the master */
+			if (fd[0] != -1)
+				close(fd[0]);
+			master_process(s, argv, waitattach, fd[1]);
+			return 0;
+		}
+		/* Parent - just return. */
+
+#if defined(F_SETFD) && defined(FD_CLOEXEC)
+		/* Check if an error occurred while trying to execute the program. */
+		if (fd[0] != -1)
+		{
+			char buf[1024];
+			ssize_t len;
+
+			close(fd[1]);
+			len = read(fd[0], buf, sizeof(buf));
+			if (len > 0)
+			{
+				write(2, buf, len);
+				kill(pid, SIGTERM);
+				return 1;
+			}
+			close(fd[0]);
+		}
 #endif
+	}
 	close(s);
 	return 0;
 }
